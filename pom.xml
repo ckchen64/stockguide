@@ -67,7 +67,7 @@
 		<dependency>
 			<groupId>org.projectlombok</groupId>
 			<artifactId>lombok</artifactId>
-			<version>1.18.36</version> <!-- ⚠️ 이 줄을 반드시 추가하여 버전을 고정하세요! -->
+			<version>1.18.38</version> <!-- ⚠️ 이 줄을 반드시 추가하여 버전을 고정하세요! -->
 			<scope>provided</scope>
 		</dependency>
 

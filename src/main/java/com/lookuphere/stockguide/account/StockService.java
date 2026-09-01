@@ -20,7 +20,7 @@ public class StockService {
     private final DailyStockPriceRepository dailyStockPriceRepository;
     private final TradeHistoryService tradeHistoryService;
 
-    // 🎯 규격화된 계산기들 개별 주입
+    // 🎯 규격화된 계산기들 개별 주입111
     private final SmaCalculator smaCalculator;
     private final MacdCalculator macdCalculator;
     private final RsiCalculator rsiCalculator;

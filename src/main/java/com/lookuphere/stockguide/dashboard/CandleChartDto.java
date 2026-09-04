@@ -12,6 +12,9 @@ import lombok.AllArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class CandleChartDto {
+    // 🎯 [신규 추가] 실시간 웹소켓 채널 식별용 종목 코드 (예: "005930")
+    private String stockCode;
+
     private String date;
     private long open;
     private long high;

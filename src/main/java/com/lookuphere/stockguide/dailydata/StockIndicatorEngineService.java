@@ -76,7 +76,9 @@ public class StockIndicatorEngineService {
         target.setMacdHist(source.getMacdHist());
         target.setObv(source.getObv());
         target.setMfi(source.getMfi());
+        target.setMfiSignal(source.getMfiSignal());
         target.setSigma(source.getSigma());
+        target.setSigmaSignal(source.getSigmaSignal());
         target.setAdx(source.getAdx());
         target.setDiPlus(source.getDiPlus());
         target.setDiMinus(source.getDiMinus());

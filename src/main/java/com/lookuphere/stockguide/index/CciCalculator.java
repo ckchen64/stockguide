@@ -8,7 +8,14 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 🧮 CCI (Commodity Channel Index) 계산기
+ * CCI (Commodity Channel Index) 계산기
+ *
+ * CCI:
+ * Typical Price(TP)를 기준으로 현재 가격이
+ * 최근 평균 가격에서 얼마나 떨어져 있는지를 계산합니다.
+ *
+ * CCI Signal:
+ * 최근 N개의 CCI 값을 평균하여 계산합니다.
  */
 @Component
 public class CciCalculator implements IndicatorCalculator {
@@ -20,57 +27,280 @@ public class CciCalculator implements IndicatorCalculator {
     }
 
     @Override
-    public String calculate(DailyStockPrice targetDayData,
-                            List<DailyStockPrice> historicalDataCache,
-                            int currentSimulationIndex,
-                            Map<String, Object> resultMap) {
+    public String calculate(
+            DailyStockPrice targetDayData,
+            List<DailyStockPrice> historicalDataCache,
+            int currentSimulationIndex,
+            Map<String, Object> resultMap
+    ) {
 
-        // USER 설정 우선 탐색 (없을 경우 DB 공통 설정 -> 기본값 20 적용)
-        String userId = null; // 추후 세션/인자에서 userId 전달받아 연결
-        int period = configManager.getUserInt(userId, "CCI_PERIOD", 20);
+        /*
+         * 현재는 userId가 연결되어 있지 않기 때문에 null을 사용합니다.
+         *
+         * getUserInt()는
+         * 사용자 설정 -> 공통 설정 -> 기본값
+         * 순서로 값을 찾습니다.
+         */
+        String userId = null;
 
+        /*
+         * CCI 계산 기간
+         * 기본값: 20일
+         */
+        int period = configManager.getUserInt(
+                userId,
+                "CCI_PERIOD",
+                20
+        );
+
+        /*
+         * CCI Signal 계산 기간
+         * 기본값: 9일
+         */
+        int signalPeriod = configManager.getUserInt(
+                userId,
+                "CCI_SIGNAL_PERIOD",
+                9
+        );
+
+        /*
+         * CCI 자체를 계산하기 위한 데이터가 부족한 경우
+         */
         if (currentSimulationIndex < period - 1) {
+
             targetDayData.setCci(0.0);
             targetDayData.setCciSignal(0.0);
+
             resultMap.put("cci", 0.0);
             resultMap.put("cciSignal", 0.0);
+
             return "⏳ [데이터 축적] CCI 계산을 위한 과거 데이터(N일)가 부족합니다.";
         }
 
-        // 1. N일간의 Typical Price (TP = (고가 + 저가 + 종가) / 3) 및 평균(SMA) 계산
-        double[] tpArray = new double[period];
+        /*
+         * ---------------------------------------------------------
+         * 1. 현재 날짜의 CCI 계산
+         * ---------------------------------------------------------
+         */
+        double currentCci = calculateCciAtIndex(
+                historicalDataCache,
+                currentSimulationIndex,
+                period
+        );
+
+        /*
+         * 소수점 둘째 자리까지 반올림
+         */
+        double roundedCci =
+                Math.round(currentCci * 100.0) / 100.0;
+
+        /*
+         * ---------------------------------------------------------
+         * 2. CCI Signal 계산
+         * ---------------------------------------------------------
+         *
+         * CCI Signal은 최근 signalPeriod개의 CCI 평균값으로 계산합니다.
+         *
+         * 예:
+         *
+         * signalPeriod = 9
+         *
+         * 최근 9일의 CCI
+         *
+         * CCI1
+         * CCI2
+         * ...
+         * CCI9
+         *
+         * 평균을 내서 CCI Signal로 사용합니다.
+         */
+
+        double cciSignal;
+
+        /*
+         * CCI Signal 계산에 필요한 과거 CCI 개수가 충분한지 확인합니다.
+         *
+         * CCI는 period-1 인덱스부터 계산 가능하고,
+         * 그 이후 signalPeriod개의 CCI가 필요합니다.
+         */
+        int firstCciIndex = period - 1;
+
+        int availableCciCount =
+                currentSimulationIndex - firstCciIndex + 1;
+
+        if (availableCciCount < signalPeriod) {
+
+            /*
+             * 아직 Signal 기간만큼 CCI가 쌓이지 않았다면
+             * 현재 CCI를 Signal 값으로 사용합니다.
+             *
+             * 이렇게 하면 초반 값이 null이 되지 않습니다.
+             */
+            cciSignal = roundedCci;
+
+        } else {
+
+            double cciSum = 0.0;
+
+            int signalStartIndex =
+                    currentSimulationIndex - signalPeriod + 1;
+
+            for (int i = signalStartIndex;
+                 i <= currentSimulationIndex;
+                 i++) {
+
+                double pastCci = calculateCciAtIndex(
+                        historicalDataCache,
+                        i,
+                        period
+                );
+
+                cciSum += pastCci;
+            }
+
+            cciSignal = cciSum / signalPeriod;
+        }
+
+        /*
+         * 소수점 둘째 자리까지 반올림
+         */
+        double roundedCciSignal =
+                Math.round(cciSignal * 100.0) / 100.0;
+
+        /*
+         * ---------------------------------------------------------
+         * 3. DailyStockPrice Entity에 저장
+         * ---------------------------------------------------------
+         */
+
+        targetDayData.setCci(roundedCci);
+        targetDayData.setCciSignal(roundedCciSignal);
+
+        /*
+         * ---------------------------------------------------------
+         * 4. resultMap에도 저장
+         * ---------------------------------------------------------
+         *
+         * 차트나 다른 지표 / 이벤트 판단 로직에서 사용할 수 있습니다.
+         */
+        resultMap.put("cci", roundedCci);
+        resultMap.put("cciSignal", roundedCciSignal);
+
+        /*
+         * 계산 결과 로그 문자열 반환
+         */
+        return String.format(
+                "📊 [CCI] CCI(%d일): %.2f | Signal(%d일): %.2f",
+                period,
+                roundedCci,
+                signalPeriod,
+                roundedCciSignal
+        );
+    }
+
+
+    /**
+     * 특정 인덱스 시점의 CCI를 계산하는 공통 메서드
+     *
+     * @param historicalDataCache 전체 주가 데이터
+     * @param currentIndex        CCI를 계산할 현재 위치
+     * @param period              CCI 계산 기간
+     * @return 계산된 CCI
+     */
+    private double calculateCciAtIndex(
+            List<DailyStockPrice> historicalDataCache,
+            int currentIndex,
+            int period
+    ) {
+
+        /*
+         * CCI 계산에 필요한 데이터가 부족하면
+         * 안전하게 0을 반환합니다.
+         */
+        if (currentIndex < period - 1) {
+            return 0.0;
+        }
+
+        /*
+         * ---------------------------------------------------------
+         * 1. 최근 N일 Typical Price 계산
+         *
+         * TP = (고가 + 저가 + 종가) / 3
+         * ---------------------------------------------------------
+         */
+
+        double[] typicalPrices =
+                new double[period];
+
         double tpSum = 0.0;
 
+        int startIndex =
+                currentIndex - period + 1;
+
         for (int i = 0; i < period; i++) {
-            DailyStockPrice data = historicalDataCache.get(currentSimulationIndex - (period - 1) + i);
-            double tp = (data.getHighPrice() + data.getLowPrice() + data.getClosePrice()) / 3.0;
-            tpArray[i] = tp;
-            tpSum += tp;
+
+            DailyStockPrice data =
+                    historicalDataCache.get(startIndex + i);
+
+            double typicalPrice =
+                    (
+                            data.getHighPrice()
+                                    + data.getLowPrice()
+                                    + data.getClosePrice()
+                    ) / 3.0;
+
+            typicalPrices[i] = typicalPrice;
+
+            tpSum += typicalPrice;
         }
 
-        double tpSma = tpSum / period;
-        double currentTp = tpArray[period - 1];
+        /*
+         * Typical Price 평균
+         */
+        double tpSma =
+                tpSum / period;
 
-        // 2. Mean Deviation (평균 편차) 계산
-        double devSum = 0.0;
-        for (double tp : tpArray) {
-            devSum += Math.abs(tp - tpSma);
+        /*
+         * 현재 날짜의 Typical Price
+         */
+        double currentTp =
+                typicalPrices[period - 1];
+
+        /*
+         * ---------------------------------------------------------
+         * 2. Mean Deviation 계산
+         * ---------------------------------------------------------
+         */
+
+        double deviationSum = 0.0;
+
+        for (double tp : typicalPrices) {
+
+            deviationSum +=
+                    Math.abs(tp - tpSma);
         }
-        double meanDeviation = devSum / period;
 
-        // 3. CCI 계산 (Lambert 상수 0.015 적용)
-        double cci = 0.0;
-        if (meanDeviation != 0) {
-            cci = (currentTp - tpSma) / (0.015 * meanDeviation);
+        double meanDeviation =
+                deviationSum / period;
+
+        /*
+         * ---------------------------------------------------------
+         * 3. CCI 계산
+         *
+         * CCI =
+         *
+         * (현재 TP - TP 평균)
+         * -----------------------------
+         * 0.015 × Mean Deviation
+         * ---------------------------------------------------------
+         */
+
+        if (meanDeviation == 0.0) {
+            return 0.0;
         }
 
-        double roundedCci = Math.round(cci * 100.0) / 100.0;
-
-        // 엔티티 및 결과 맵 저장
-        targetDayData.setCci(roundedCci);
-        resultMap.put("cci", roundedCci);
-
-        return String.format("📊 [CCI] 이격지수(%d일): %.2f", period, roundedCci);
+        return (currentTp - tpSma)
+                / (0.015 * meanDeviation);
     }
 }
 

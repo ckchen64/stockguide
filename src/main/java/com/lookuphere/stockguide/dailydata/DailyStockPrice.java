@@ -40,6 +40,7 @@ public class DailyStockPrice {
 
     private Double rsi;
     private Double mfi;
+    private Double mfiSignal;
     private Double obv;
 
     private Double macd;
@@ -47,6 +48,7 @@ public class DailyStockPrice {
     private Double macdHist;
 
     private Double sigma;
+    private Double sigmaSignal;
     private Double adx;
     private Double diPlus;
     private Double diMinus;

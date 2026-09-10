@@ -9,6 +9,28 @@ import java.util.Map;
 
 /**
  * 🧮 MACD (Moving Average Convergence Divergence) 계산기
+ *
+ * 기본 MACD
+ * MACD_FAST_PERIOD = 12
+ * MACD_SLOW_PERIOD = 26
+ *
+ * 계산:
+ * EMA(12) - EMA(26)
+ *
+ *
+ * 역 MACD
+ * MACD_FAST_PERIOD = 26
+ * MACD_SLOW_PERIOD = 12
+ *
+ * 계산:
+ * EMA(26) - EMA(12)
+ *
+ * 즉, FAST / SLOW라는 이름과 관계없이
+ * 사용자가 입력한 순서대로
+ *
+ * EMA(FAST_PERIOD) - EMA(SLOW_PERIOD)
+ *
+ * 를 계산합니다.
  */
 @Component
 public class MacdCalculator implements IndicatorCalculator {
@@ -20,102 +42,574 @@ public class MacdCalculator implements IndicatorCalculator {
     }
 
     @Override
-    public String calculate(DailyStockPrice targetDayData,
-                            List<DailyStockPrice> historicalDataCache,
-                            int currentSimulationIndex,
-                            Map<String, Object> resultMap) {
+    public String calculate(
+            DailyStockPrice targetDayData,
+            List<DailyStockPrice> historicalDataCache,
+            int currentSimulationIndex,
+            Map<String, Object> resultMap
+    ) {
 
-        // USER 설정 적용 (userId가 없거나 미설정 시 공통 DB 설정 -> 기본값 적용)
-        String userId = null; // 추후 세션/인자에서 userId 전달받아 연결
-        int fastPeriod = configManager.getUserInt(userId, "MACD_FAST_PERIOD", 12);
-        int slowPeriod = configManager.getUserInt(userId, "MACD_SLOW_PERIOD", 26);
-        int signalPeriod = configManager.getUserInt(userId, "MACD_SIGNAL_PERIOD", 9);
+        /*
+         * ---------------------------------------------------------
+         * 1. 설정값 읽기
+         * ---------------------------------------------------------
+         */
 
-        if (currentSimulationIndex < slowPeriod - 1) {
+        String userId = null;
+
+        int fastPeriod = configManager.getUserInt(
+                userId,
+                "MACD_FAST_PERIOD",
+                12
+        );
+
+        int slowPeriod = configManager.getUserInt(
+                userId,
+                "MACD_SLOW_PERIOD",
+                26
+        );
+
+        int signalPeriod = configManager.getUserInt(
+                userId,
+                "MACD_SIGNAL_PERIOD",
+                9
+        );
+
+
+        /*
+         * ---------------------------------------------------------
+         * 2. 잘못된 설정값 방어
+         * ---------------------------------------------------------
+         *
+         * period가 0 또는 음수가 들어오면
+         * EMA 계산에서 오류가 발생할 수 있습니다.
+         *
+         * 따라서 기본값으로 복구합니다.
+         */
+
+        if (fastPeriod <= 0) {
+            fastPeriod = 12;
+        }
+
+        if (slowPeriod <= 0) {
+            slowPeriod = 26;
+        }
+
+        if (signalPeriod <= 0) {
+            signalPeriod = 9;
+        }
+
+
+        /*
+         * ---------------------------------------------------------
+         * 3. 필요한 최소 데이터 기간 결정
+         * ---------------------------------------------------------
+         *
+         * 매우 중요합니다.
+         *
+         * 일반 MACD
+         * fast = 12
+         * slow = 26
+         *
+         * → 26일 필요
+         *
+         * 역 MACD
+         * fast = 26
+         * slow = 12
+         *
+         * → 역시 26일 필요
+         *
+         * 따라서 slowPeriod만 검사하면 안 되고
+         * 둘 중 큰 값을 사용해야 합니다.
+         */
+
+        int maxPeriod = Math.max(
+                fastPeriod,
+                slowPeriod
+        );
+
+
+        /*
+         * ---------------------------------------------------------
+         * 4. 데이터 부족 처리
+         * ---------------------------------------------------------
+         */
+
+        if (currentSimulationIndex < maxPeriod - 1) {
+
             targetDayData.setMacd(0.0);
             targetDayData.setMacdSignal(0.0);
             targetDayData.setMacdHist(0.0);
-            return "⏳ [데이터 축적] MACD 계산을 위한 최소 데이터(장기 이평 기간)가 부족합니다.";
+
+            resultMap.put("macd", 0.0);
+            resultMap.put("macdSignal", 0.0);
+            resultMap.put("macdHist", 0.0);
+
+            return String.format(
+                    "⏳ [데이터 축적] MACD 계산을 위한 최소 데이터(%d일)가 부족합니다.",
+                    maxPeriod
+            );
         }
 
-        // 1. 단기 EMA 및 장기 EMA 계산
-        double fastEma = calculateEMA(historicalDataCache, currentSimulationIndex, fastPeriod);
-        double slowEma = calculateEMA(historicalDataCache, currentSimulationIndex, slowPeriod);
 
-        // 2. MACD Line 산출 (단기 EMA - 장기 EMA)
-        double macdLine = fastEma - slowEma;
-        macdLine = Math.round(macdLine * 100.0) / 100.0;
+        /*
+         * ---------------------------------------------------------
+         * 5. FAST EMA 계산
+         * ---------------------------------------------------------
+         */
 
-        // 3. MACD Signal Line 계산 (MACD Line의 N일 EMA)
-        double signalLine = calculateMacdSignal(historicalDataCache, currentSimulationIndex, fastPeriod, slowPeriod, signalPeriod, macdLine);
-        signalLine = Math.round(signalLine * 100.0) / 100.0;
+        double fastEma = calculateEMA(
+                historicalDataCache,
+                currentSimulationIndex,
+                fastPeriod
+        );
 
-        // 4. MACD Histogram 산출 (MACD Line - Signal Line)
-        double macdHist = Math.round((macdLine - signalLine) * 100.0) / 100.0;
 
-        // 엔티티에 결과 저장
-        targetDayData.setMacd(macdLine);
-        targetDayData.setMacdSignal(signalLine);
-        targetDayData.setMacdHist(macdHist);
+        /*
+         * ---------------------------------------------------------
+         * 6. SLOW EMA 계산
+         * ---------------------------------------------------------
+         */
 
-        resultMap.put("macd", macdLine);
-        resultMap.put("macdSignal", signalLine);
-        resultMap.put("macdHist", macdHist);
+        double slowEma = calculateEMA(
+                historicalDataCache,
+                currentSimulationIndex,
+                slowPeriod
+        );
 
-        return String.format("📊 [MACD] Line: %.2f | Signal: %.2f | Hist: %.2f", macdLine, signalLine, macdHist);
+
+        /*
+         * ---------------------------------------------------------
+         * 7. MACD Line 계산
+         * ---------------------------------------------------------
+         *
+         * 사용자가 입력한 순서를 그대로 유지합니다.
+         *
+         * 12, 26
+         * → EMA12 - EMA26
+         *
+         * 26, 12
+         * → EMA26 - EMA12
+         *
+         * 따라서 역MACD도 별도 코드를 만들 필요가 없습니다.
+         */
+
+        double macdLine =
+                fastEma - slowEma;
+
+        double roundedMacd =
+                round(macdLine);
+
+
+        /*
+         * ---------------------------------------------------------
+         * 8. MACD Signal 계산
+         * ---------------------------------------------------------
+         */
+
+        double signalLine =
+                calculateMacdSignal(
+                        historicalDataCache,
+                        currentSimulationIndex,
+                        fastPeriod,
+                        slowPeriod,
+                        signalPeriod
+                );
+
+        double roundedSignal =
+                round(signalLine);
+
+
+        /*
+         * ---------------------------------------------------------
+         * 9. MACD Histogram
+         * ---------------------------------------------------------
+         */
+
+        double macdHist =
+                roundedMacd - roundedSignal;
+
+        double roundedHist =
+                round(macdHist);
+
+
+        /*
+         * ---------------------------------------------------------
+         * 10. Entity 저장
+         * ---------------------------------------------------------
+         */
+
+        targetDayData.setMacd(roundedMacd);
+        targetDayData.setMacdSignal(roundedSignal);
+        targetDayData.setMacdHist(roundedHist);
+
+
+        /*
+         * ---------------------------------------------------------
+         * 11. ResultMap 저장
+         * ---------------------------------------------------------
+         */
+
+        resultMap.put(
+                "macd",
+                roundedMacd
+        );
+
+        resultMap.put(
+                "macdSignal",
+                roundedSignal
+        );
+
+        resultMap.put(
+                "macdHist",
+                roundedHist
+        );
+
+
+        /*
+         * ---------------------------------------------------------
+         * 12. 일반 MACD / 역MACD 구분
+         * ---------------------------------------------------------
+         */
+
+        String macdType;
+
+        if (fastPeriod < slowPeriod) {
+
+            macdType = "일반 MACD";
+
+        } else if (fastPeriod > slowPeriod) {
+
+            macdType = "역 MACD";
+
+        } else {
+
+            macdType = "동일기간 MACD";
+        }
+
+
+        return String.format(
+                "📊 [%s] EMA(%d)-EMA(%d) | Line: %.2f | Signal(%d): %.2f | Hist: %.2f",
+                macdType,
+                fastPeriod,
+                slowPeriod,
+                roundedMacd,
+                signalPeriod,
+                roundedSignal,
+                roundedHist
+        );
     }
 
+
     /**
-     * 지수이동평균(EMA) 계산 헬퍼 메서드
+     * ============================================================
+     * EMA 계산
+     * ============================================================
+     *
+     * 표준적인 EMA 계산 방식입니다.
+     *
+     * 1. 최초 period개의 종가 → SMA
+     * 2. 그 이후부터 EMA 공식 적용
+     *
+     * EMA =
+     *
+     * (현재가격 - 이전EMA) × multiplier + 이전EMA
+     *
+     * multiplier =
+     *
+     * 2 / (period + 1)
      */
-    private double calculateEMA(List<DailyStockPrice> dataList, int currentIndex, int period) {
-        double multiplier = 2.0 / (period + 1);
+    private double calculateEMA(
+            List<DailyStockPrice> dataList,
+            int currentIndex,
+            int period
+    ) {
 
-        // 초기값: 첫 N일 단순이동평균(SMA)
-        double ema = 0.0;
-        int startIndex = currentIndex - period + 1;
-        for (int i = startIndex; i <= currentIndex; i++) {
-            ema += dataList.get(i).getClosePrice();
+        /*
+         * 잘못된 period 방어
+         */
+        if (period <= 0) {
+            return 0.0;
         }
-        ema /= period;
 
-        // 이후 데이터 지수 평활화 적용
-        for (int i = startIndex + 1; i <= currentIndex; i++) {
-            double close = dataList.get(i).getClosePrice();
-            ema = (close - ema) * multiplier + ema;
+
+        /*
+         * 아직 period만큼 데이터가 없다면
+         * EMA 계산 불가능
+         */
+        if (currentIndex < period - 1) {
+            return 0.0;
         }
+
+
+        /*
+         * ---------------------------------------------------------
+         * 1. 최초 period 데이터 SMA 계산
+         * ---------------------------------------------------------
+         */
+
+        double sma = 0.0;
+
+        for (int i = 0;
+             i < period;
+             i++) {
+
+            sma += dataList
+                    .get(i)
+                    .getClosePrice();
+        }
+
+        sma /= period;
+
+
+        /*
+         * 최초 EMA
+         */
+        double ema = sma;
+
+
+        /*
+         * EMA multiplier
+         */
+        double multiplier =
+                2.0 / (period + 1.0);
+
+
+        /*
+         * ---------------------------------------------------------
+         * 2. 최초 period 이후부터 현재까지 EMA 계산
+         * ---------------------------------------------------------
+         */
+
+        for (int i = period;
+             i <= currentIndex;
+             i++) {
+
+            double close =
+                    dataList
+                            .get(i)
+                            .getClosePrice();
+
+            ema =
+                    (close - ema)
+                            * multiplier
+                            + ema;
+        }
+
 
         return ema;
     }
 
+
     /**
-     * MACD Signal Line (MACD 값들의 EMA) 계산 헬퍼 메서드
+     * ============================================================
+     * MACD Signal Line 계산
+     * ============================================================
+     *
+     * MACD Signal =
+     *
+     * MACD 값들의 signalPeriod EMA
      */
-    private double calculateMacdSignal(List<DailyStockPrice> dataList, int currentIndex, int fastPeriod, int slowPeriod, int signalPeriod, double currentMacd) {
-        if (currentIndex < (slowPeriod - 1) + (signalPeriod - 1)) {
-            return currentMacd; // Signal 계산에 필요한 과거 MACD 데이터 부족 시 현재 MACD 반환
+    private double calculateMacdSignal(
+            List<DailyStockPrice> dataList,
+            int currentIndex,
+            int fastPeriod,
+            int slowPeriod,
+            int signalPeriod
+    ) {
+
+        /*
+         * FAST와 SLOW 중 긴 기간을 기준으로
+         * 최초 MACD 계산 가능 위치 결정
+         */
+        int maxPeriod =
+                Math.max(
+                        fastPeriod,
+                        slowPeriod
+                );
+
+
+        /*
+         * 최초 MACD 계산 가능한 index
+         *
+         * 예:
+         *
+         * maxPeriod = 26
+         *
+         * index 25부터 계산 가능
+         */
+        int firstMacdIndex =
+                maxPeriod - 1;
+
+
+        /*
+         * 현재까지 계산 가능한 MACD 개수
+         */
+        int availableMacdCount =
+                currentIndex
+                        - firstMacdIndex
+                        + 1;
+
+
+        /*
+         * 현재 MACD
+         */
+        double currentMacd =
+                calculateMacdAtIndex(
+                        dataList,
+                        currentIndex,
+                        fastPeriod,
+                        slowPeriod
+                );
+
+
+        /*
+         * Signal 기간보다 MACD 데이터가 적으면
+         * 현재 MACD를 Signal로 사용
+         */
+        if (availableMacdCount < signalPeriod) {
+
+            return currentMacd;
         }
 
-        double multiplier = 2.0 / (signalPeriod + 1);
-        double signalEma = 0.0;
 
-        // 과거 MACD 포인트 추적 연산
-        int startIndex = currentIndex - signalPeriod + 1;
-        for (int i = startIndex; i <= currentIndex; i++) {
-            double fEma = calculateEMA(dataList, i, fastPeriod);
-            double sEma = calculateEMA(dataList, i, slowPeriod);
-            signalEma += (fEma - sEma);
-        }
-        signalEma /= signalPeriod;
+        /*
+         * ---------------------------------------------------------
+         * 1. 최초 signalPeriod개 MACD의 SMA 계산
+         * ---------------------------------------------------------
+         */
 
-        for (int i = startIndex + 1; i <= currentIndex; i++) {
-            double fEma = calculateEMA(dataList, i, fastPeriod);
-            double sEma = calculateEMA(dataList, i, slowPeriod);
-            double mLine = fEma - sEma;
-            signalEma = (mLine - signalEma) * multiplier + signalEma;
+        double signalSum = 0.0;
+
+        int firstSignalEndIndex =
+                firstMacdIndex
+                        + signalPeriod
+                        - 1;
+
+
+        for (int i = firstMacdIndex;
+             i <= firstSignalEndIndex;
+             i++) {
+
+            double macd =
+                    calculateMacdAtIndex(
+                            dataList,
+                            i,
+                            fastPeriod,
+                            slowPeriod
+                    );
+
+            signalSum += macd;
         }
+
+
+        double signalEma =
+                signalSum / signalPeriod;
+
+
+        /*
+         * ---------------------------------------------------------
+         * 2. 그 이후 MACD 값을 이용해서 Signal EMA 계산
+         * ---------------------------------------------------------
+         */
+
+        double multiplier =
+                2.0 / (signalPeriod + 1.0);
+
+
+        for (int i = firstSignalEndIndex + 1;
+             i <= currentIndex;
+             i++) {
+
+            double macd =
+                    calculateMacdAtIndex(
+                            dataList,
+                            i,
+                            fastPeriod,
+                            slowPeriod
+                    );
+
+
+            signalEma =
+                    (macd - signalEma)
+                            * multiplier
+                            + signalEma;
+        }
+
 
         return signalEma;
+    }
+
+
+    /**
+     * ============================================================
+     * 특정 날짜의 MACD 계산
+     * ============================================================
+     */
+    private double calculateMacdAtIndex(
+            List<DailyStockPrice> dataList,
+            int index,
+            int fastPeriod,
+            int slowPeriod
+    ) {
+
+        /*
+         * 두 기간 중 큰 기간만큼 데이터가 있어야 합니다.
+         */
+        int maxPeriod =
+                Math.max(
+                        fastPeriod,
+                        slowPeriod
+                );
+
+        if (index < maxPeriod - 1) {
+            return 0.0;
+        }
+
+
+        /*
+         * 첫 번째 EMA
+         */
+        double fastEma =
+                calculateEMA(
+                        dataList,
+                        index,
+                        fastPeriod
+                );
+
+
+        /*
+         * 두 번째 EMA
+         */
+        double slowEma =
+                calculateEMA(
+                        dataList,
+                        index,
+                        slowPeriod
+                );
+
+
+        /*
+         * 입력 순서 그대로 계산
+         *
+         * fast=12, slow=26
+         * → EMA12 - EMA26
+         *
+         * fast=26, slow=12
+         * → EMA26 - EMA12
+         */
+        return fastEma - slowEma;
+    }
+
+
+    /**
+     * 소수점 둘째 자리 반올림
+     */
+    private double round(double value) {
+
+        return Math.round(
+                value * 100.0
+        ) / 100.0;
     }
 }
 
@@ -130,152 +624,122 @@ public class MacdCalculator implements IndicatorCalculator {
 //구코드
 //package com.lookuphere.stockguide.index;
 //
-////import org.springframework.stereotype.Component;
-////
-////import java.util.ArrayList;
-////import java.util.List;
-////import java.util.Map;
-////
-/////**
-//// * 🧮 MACD 및 MACD 시그널 라인 연산 코어
-//// * MACD는 단순히 현재 가격만 보는 SMA와 달리, 과거에 계산된 MACD 값들을 저장해두는 자체 창고(macdList)가 필요하고,
-//// * 지수이동평균(EMA)을 구하는 수학적 보조 메서드(calculateEMA)를 함께 지니고 있어야 합니다.
-//// */
-////@Component
-////public class MacdCalculator {
-////
-////    // 💡 MACD 역추적용 자체 전역 창고를 클래스 내부로 격리
-////    private final List<Double> macdList = new ArrayList<>();
-////
-////    public String calculate(List<Integer> priceList, Map<String, Object> resultMap) {
-////        int listSize = priceList.size();
-////
-////        // 1단계: 26일치 데이터가 쌓이기 전 방어 로직 및 resultMap 초기화
-////        if (listSize < 26) {
-////            resultMap.put("macd", 0);
-////            resultMap.put("macdSignal", 0);
-////            return "⏳ r-MACD 26일치 데이터 축적 중...";
-////        }
-////
-////        // 2단계: EMA 12와 EMA 26을 구해 단기-장기 격차(MACD) 산출
-////        double ema12 = calculateEMA(priceList, 26); // 기존 코드의 인자 순서 버그(26, 12)를 정상적인 표준 12, 26순으로 교정하여 연산 안정성을 높였습니다.
-////        double ema26 = calculateEMA(priceList, 12);
-////        double currentMacd = ema12 - ema26;
-////        this.macdList.add(currentMacd);
-////
-////        // 3단계: 실시간 차트 바인딩용 "macd" 값 동기화 주입
-////        resultMap.put("macd", (int) Math.round(currentMacd));
-////
-////        // 4단계: 시그널선(MACD의 9일 지수이동평균) 산출 및 리포트 반환
-////        if (this.macdList.size() < 9) {
-////            resultMap.put("macdSignal", 0);
-////            return "⏳ 시그널선 확정 대기 중...";
-////        }
-////
-////        double signal9 = calculateEMA(this.macdList, 9);
-////        resultMap.put("macdSignal", (int) Math.round(signal9)); // 기존 StockService의 외곽 동기화 로직을 계산기 내부로 전격 통합
-////
-////        // 5단계: 입체적 리포트 멘트 생성
-////        return currentMacd > signal9
-////                ? String.format("📈 [r-MACD 상승] 추세 (MACD: %.1f | 시그널: %.1f)", currentMacd, signal9)
-////                : String.format("📉 [r-MACD 하락] 관망 (MACD: %.1f | 시그널: %.1f)", currentMacd, signal9);
-////    }
-////
-////    /**
-////     * 지수이동평균(EMA) 공통 수학 내부 메서드
-////     */
-////    private double calculateEMA(List<? extends Number> dataList, int period) {
-////        int size = dataList.size();
-////        if (size < period) return dataList.get(size - 1).doubleValue();
-////
-////        double k = 2.0 / (period + 1.0);
-////        double ema = dataList.get(size - period).doubleValue();
-////
-////        for (int i = size - period + 1; i < size; i++) {
-////            ema = (dataList.get(i).doubleValue() * k) + (ema * (1.0 - k));
-////        }
-////        return Math.round(ema * 10.0) / 10.0;
-////    }
-////}
-//
-//import com.lookuphere.stockguide.dailydata.IndexConfigManager; // 💡 타 패키지의 설정 매니저 임포트
+//import com.lookuphere.stockguide.dailydata.DailyStockPrice;
+//import com.lookuphere.stockguide.dailydata.IndexConfigManager;
 //import org.springframework.stereotype.Component;
 //
-//import java.util.ArrayList;
 //import java.util.List;
 //import java.util.Map;
 //
 ///**
-// * 🧮 MACD 및 MACD 시그널 라인 연산 코어 (동적 파라미터 튜닝 버전)
+// * 🧮 MACD (Moving Average Convergence Divergence) 계산기
 // */
 //@Component
-//public class MacdCalculator {
+//public class MacdCalculator implements IndicatorCalculator {
 //
-//    private final IndexConfigManager configManager; // 🔄 동적 설정 매니저 주입
+//    private final IndexConfigManager configManager;
 //
-//    // 💡 MACD 역추적용 자체 전역 창고
-//    private final List<Double> macdList = new ArrayList<>();
-//
-//    // 생성자 주입을 통해 컨테이너로부터 의존성을 공급받습니다.
 //    public MacdCalculator(IndexConfigManager configManager) {
 //        this.configManager = configManager;
 //    }
 //
-//    public String calculate(List<Integer> priceList, Map<String, Object> resultMap) {
+//    @Override
+//    public String calculate(DailyStockPrice targetDayData,
+//                            List<DailyStockPrice> historicalDataCache,
+//                            int currentSimulationIndex,
+//                            Map<String, Object> resultMap) {
 //
-//        // 🎛️ DB 파라미터 실시간 동적 스위치 매핑 (기본값: 단기 12 / 장기 26 / 시그널 9)
-//        int fastPeriod = configManager.getInt("MACD_FAST", 12);
-//        int slowPeriod = configManager.getInt("MACD_SLOW", 26);
-//        int signalPeriod = configManager.getInt("MACD_SIGNAL", 9);
+//        // USER 설정 적용 (userId가 없거나 미설정 시 공통 DB 설정 -> 기본값 적용)
+//        String userId = null; // 추후 세션/인자에서 userId 전달받아 연결
+//        int fastPeriod = configManager.getUserInt(userId, "MACD_FAST_PERIOD", 12);
+//        int slowPeriod = configManager.getUserInt(userId, "MACD_SLOW_PERIOD", 26);
+//        int signalPeriod = configManager.getUserInt(userId, "MACD_SIGNAL_PERIOD", 9);
 //
-//        int listSize = priceList.size();
-//
-//        // 1단계: 장기 기준선(slowPeriod) 데이터가 쌓이기 전 방어 로직 및 resultMap 초기화
-//        if (listSize < slowPeriod) {
-//            resultMap.put("macd", 0);
-//            resultMap.put("macdSignal", 0);
-//            return String.format("⏳ r-MACD 데이터 축적 중... (%d/%d)", listSize, slowPeriod);
+//        if (currentSimulationIndex < slowPeriod - 1) {
+//            targetDayData.setMacd(0.0);
+//            targetDayData.setMacdSignal(0.0);
+//            targetDayData.setMacdHist(0.0);
+//            return "⏳ [데이터 축적] MACD 계산을 위한 최소 데이터(장기 이평 기간)가 부족합니다.";
 //        }
 //
-//        // 2단계: 단기 EMA와 장기 EMA를 구해 격차(MACD) 산출
-//        // 🚨 [치명적 버그 교정]: 변수명과 할당 주기가 서로 엇갈려 역산되던 구조를 정상 표준 공식으로 바로잡았습니다.
-//        double emaFast = calculateEMA(priceList, fastPeriod);
-//        double emaSlow = calculateEMA(priceList, slowPeriod);
-//        double currentMacd = emaFast - emaSlow;
-//        this.macdList.add(currentMacd);
+//        // 1. 단기 EMA 및 장기 EMA 계산
+//        double fastEma = calculateEMA(historicalDataCache, currentSimulationIndex, fastPeriod);
+//        double slowEma = calculateEMA(historicalDataCache, currentSimulationIndex, slowPeriod);
 //
-//        // 3단계: 실시간 차트 바인딩용 "macd" 값 동기화 주입
-//        resultMap.put("macd", (int) Math.round(currentMacd));
+//        // 2. MACD Line 산출 (단기 EMA - 장기 EMA)
+//        double macdLine = fastEma - slowEma;
+//        macdLine = Math.round(macdLine * 100.0) / 100.0;
 //
-//        // 4단계: 시그널선(MACD의 N일 지수이동평균) 산출 및 리포트 반환
-//        if (this.macdList.size() < signalPeriod) {
-//            resultMap.put("macdSignal", 0);
-//            return "⏳ 시그널선 확정 대기 중...";
-//        }
+//        // 3. MACD Signal Line 계산 (MACD Line의 N일 EMA)
+//        double signalLine = calculateMacdSignal(historicalDataCache, currentSimulationIndex, fastPeriod, slowPeriod, signalPeriod, macdLine);
+//        signalLine = Math.round(signalLine * 100.0) / 100.0;
 //
-//        double signal = calculateEMA(this.macdList, signalPeriod);
-//        resultMap.put("macdSignal", (int) Math.round(signal));
+//        // 4. MACD Histogram 산출 (MACD Line - Signal Line)
+//        double macdHist = Math.round((macdLine - signalLine) * 100.0) / 100.0;
 //
-//        // 5단계: 입체적 리포트 멘트 생성
-//        return currentMacd > signal
-//                ? String.format("📈 [r-MACD 상승] 추세 (MACD: %.1f | 시그널: %.1f)", currentMacd, signal)
-//                : String.format("📉 [r-MACD 하락] 관망 (MACD: %.1f | 시그널: %.1f)", currentMacd, signal);
+//        // 엔티티에 결과 저장
+//        targetDayData.setMacd(macdLine);
+//        targetDayData.setMacdSignal(signalLine);
+//        targetDayData.setMacdHist(macdHist);
+//
+//        resultMap.put("macd", macdLine);
+//        resultMap.put("macdSignal", signalLine);
+//        resultMap.put("macdHist", macdHist);
+//
+//        return String.format("📊 [MACD] Line: %.2f | Signal: %.2f | Hist: %.2f", macdLine, signalLine, macdHist);
 //    }
 //
 //    /**
-//     * 지수이동평균(EMA) 공통 수학 내부 메서드
+//     * 지수이동평균(EMA) 계산 헬퍼 메서드
 //     */
-//    private double calculateEMA(List<? extends Number> dataList, int period) {
-//        int size = dataList.size();
-//        if (size < period) return dataList.get(size - 1).doubleValue();
+//    private double calculateEMA(List<DailyStockPrice> dataList, int currentIndex, int period) {
+//        double multiplier = 2.0 / (period + 1);
 //
-//        double k = 2.0 / (period + 1.0);
-//        double ema = dataList.get(size - period).doubleValue();
-//
-//        for (int i = size - period + 1; i < size; i++) {
-//            ema = (dataList.get(i).doubleValue() * k) + (ema * (1.0 - k));
+//        // 초기값: 첫 N일 단순이동평균(SMA)
+//        double ema = 0.0;
+//        int startIndex = currentIndex - period + 1;
+//        for (int i = startIndex; i <= currentIndex; i++) {
+//            ema += dataList.get(i).getClosePrice();
 //        }
-//        return Math.round(ema * 10.0) / 10.0;
+//        ema /= period;
+//
+//        // 이후 데이터 지수 평활화 적용
+//        for (int i = startIndex + 1; i <= currentIndex; i++) {
+//            double close = dataList.get(i).getClosePrice();
+//            ema = (close - ema) * multiplier + ema;
+//        }
+//
+//        return ema;
+//    }
+//
+//    /**
+//     * MACD Signal Line (MACD 값들의 EMA) 계산 헬퍼 메서드
+//     */
+//    private double calculateMacdSignal(List<DailyStockPrice> dataList, int currentIndex, int fastPeriod, int slowPeriod, int signalPeriod, double currentMacd) {
+//        if (currentIndex < (slowPeriod - 1) + (signalPeriod - 1)) {
+//            return currentMacd; // Signal 계산에 필요한 과거 MACD 데이터 부족 시 현재 MACD 반환
+//        }
+//
+//        double multiplier = 2.0 / (signalPeriod + 1);
+//        double signalEma = 0.0;
+//
+//        // 과거 MACD 포인트 추적 연산
+//        int startIndex = currentIndex - signalPeriod + 1;
+//        for (int i = startIndex; i <= currentIndex; i++) {
+//            double fEma = calculateEMA(dataList, i, fastPeriod);
+//            double sEma = calculateEMA(dataList, i, slowPeriod);
+//            signalEma += (fEma - sEma);
+//        }
+//        signalEma /= signalPeriod;
+//
+//        for (int i = startIndex + 1; i <= currentIndex; i++) {
+//            double fEma = calculateEMA(dataList, i, fastPeriod);
+//            double sEma = calculateEMA(dataList, i, slowPeriod);
+//            double mLine = fEma - sEma;
+//            signalEma = (mLine - signalEma) * multiplier + signalEma;
+//        }
+//
+//        return signalEma;
 //    }
 //}
-//
+

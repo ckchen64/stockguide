@@ -156,17 +156,27 @@ public class StockService {
         resultMap.putIfAbsent("sma05", (double) targetDayData.getClosePrice());
         resultMap.putIfAbsent("sma20", (double) targetDayData.getClosePrice());
         resultMap.putIfAbsent("sma60", (double) targetDayData.getClosePrice());
+
         resultMap.putIfAbsent("macd", 0.0);
         resultMap.putIfAbsent("macdSignal", 0.0);
-        resultMap.putIfAbsent("macdHist", 0.0);
+
         resultMap.putIfAbsent("rsi", 50.0);
+
         resultMap.putIfAbsent("mfi", 50.0);
+        resultMap.putIfAbsent("mfiSignal", 50.0);
+
         resultMap.putIfAbsent("obv", 0.0);
+
         resultMap.putIfAbsent("sigma", 0.0);
+        resultMap.putIfAbsent("sigmaSignal", 0.0);
+
         resultMap.putIfAbsent("adx", 0.0);
         resultMap.putIfAbsent("diPlus", 0.0);
         resultMap.putIfAbsent("diMinus", 0.0);
+
         resultMap.putIfAbsent("cci", 0.0);
+        resultMap.putIfAbsent("cciSignal", 0.0);
+
         resultMap.putIfAbsent("eom", 0.0);
 
         return filteredReportList;

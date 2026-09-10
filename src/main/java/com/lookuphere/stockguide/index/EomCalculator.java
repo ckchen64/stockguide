@@ -1,54 +1,171 @@
 package com.lookuphere.stockguide.index;
 
 import com.lookuphere.stockguide.dailydata.DailyStockPrice;
+import com.lookuphere.stockguide.dailydata.IndexConfigManager;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
 import java.util.Map;
 
+/**
+ * EOM (Ease of Movement) 주가 이동 용이성 지표 계산기
+ */
 @Component
-public class EomCalculator {
+public class EomCalculator implements IndicatorCalculator {
 
-    public String calculate(DailyStockPrice targetDayData, List<DailyStockPrice> historicalDataCache, int currentIndex, Map<String, Object> resultMap) {
-        // 🎯 1. 0일차(첫 번째 데이터) 인덱스 바운드 방어
-        if (currentIndex <= 0 || historicalDataCache == null || historicalDataCache.size() <= currentIndex) {
+    private final IndexConfigManager configManager;
+
+    public EomCalculator(IndexConfigManager configManager) {
+        this.configManager = configManager;
+    }
+
+    @Override
+    public String calculate(
+            DailyStockPrice targetDayData,
+            List<DailyStockPrice> historicalDataCache,
+            int currentSimulationIndex,
+            Map<String, Object> resultMap
+    ) {
+
+        /*
+         * DB 설정값 우선 사용
+         * 설정값이 없으면 기본 14일 사용
+         *
+         * 현재는 userId가 없으므로 공통 설정을 사용합니다.
+         * 나중에 사용자별 설정 기능을 연결할 때 userId를 전달하도록 확장할 수 있습니다.
+         */
+        String userId = null;
+        int period = configManager.getUserInt(userId, "EOM_PERIOD", 14);
+
+        /*
+         * 첫 번째 데이터는 전일 데이터가 없기 때문에
+         * EOM 계산을 할 수 없습니다.
+         */
+        if (currentSimulationIndex <= 0
+                || historicalDataCache == null
+                || historicalDataCache.size() <= currentSimulationIndex) {
+
+            targetDayData.setEom(0.0);
             resultMap.put("eom", 0.0);
+
             return "⏳ [데이터 축적] EOM 계산을 위한 이전 데이터가 부족합니다.";
         }
 
-        // 이전 날짜 데이터 가져오기 (Index -1 방지 완료)
-        DailyStockPrice prevDayData = historicalDataCache.get(currentIndex - 1);
+        /*
+         * EOM 이동평균을 계산하려면
+         * 현재 위치를 포함하여 최대 period개의 EOM 값을 계산합니다.
+         */
+        int startIndex = Math.max(1, currentSimulationIndex - period + 1);
 
-        // 🎯 2. EOM 수치 계산
-        double high = targetDayData.getHighPrice();
-        double low = targetDayData.getLowPrice();
-        double prevHigh = prevDayData.getHighPrice();
-        double prevLow = prevDayData.getLowPrice();
-        double volume = targetDayData.getVolume();
+        double eomSum = 0.0;
+        int count = 0;
 
-        // 거래량이 0일 경우 0으로 예외 처리
-        if (volume == 0) {
-            resultMap.put("eom", 0.0);
-            return "📊 [EOM] 무빙용이성지수: 0.0000";
+        for (int i = startIndex; i <= currentSimulationIndex; i++) {
+
+            DailyStockPrice current = historicalDataCache.get(i);
+            DailyStockPrice previous = historicalDataCache.get(i - 1);
+
+            double high = current.getHighPrice();
+            double low = current.getLowPrice();
+
+            double previousHigh = previous.getHighPrice();
+            double previousLow = previous.getLowPrice();
+
+            double volume = current.getVolume();
+
+            /*
+             * 거래량이 0이면 정상적인 EOM 계산이 불가능하므로
+             * 해당 시점은 0으로 처리합니다.
+             */
+            if (volume == 0) {
+                eomSum += 0.0;
+                count++;
+                continue;
+            }
+
+            /*
+             * 1. Distance Moved
+             *
+             * 오늘의 고가/저가 중간값과
+             * 전일 고가/저가 중간값의 차이
+             */
+            double currentMidPoint = (high + low) / 2.0;
+            double previousMidPoint = (previousHigh + previousLow) / 2.0;
+
+            double distanceMoved = currentMidPoint - previousMidPoint;
+
+            /*
+             * 2. Box Ratio
+             *
+             * 기존 프로젝트에서 사용하던 계산 방식을 유지합니다.
+             *
+             * Box Ratio =
+             * (Volume / 10000) / (High - Low)
+             */
+            double highLowDiff = high - low;
+
+            /*
+             * 고가와 저가가 같으면 0으로 나누는 문제가 발생하므로
+             * 1로 보정합니다.
+             */
+            if (highLowDiff == 0) {
+                highLowDiff = 1.0;
+            }
+
+            double boxRatio = (volume / 10000.0) / highLowDiff;
+
+            /*
+             * Box Ratio가 0이면 EOM을 0으로 처리합니다.
+             */
+            double dailyEom;
+
+            if (boxRatio == 0) {
+                dailyEom = 0.0;
+            } else {
+                dailyEom = distanceMoved / boxRatio;
+            }
+
+            eomSum += dailyEom;
+            count++;
         }
 
-        // Distance Moved = ((High + Low) / 2) - ((PrevHigh + PrevLow) / 2)
-        double distanceMoved = ((high + low) / 2.0) - ((prevHigh + prevLow) / 2.0);
+        /*
+         * 지정 기간 동안의 EOM 평균값 계산
+         */
+        double eom;
 
-        // Box Ratio = (Volume / 10000) / (High - Low)  (단위 조정을 위해 10,000 나누기 활용)
-        double highLowDiff = high - low;
-        if (highLowDiff == 0) {
-            highLowDiff = 1; // 0으로 나누기 방지
+        if (count == 0) {
+            eom = 0.0;
+        } else {
+            eom = eomSum / count;
         }
-        double boxRatio = (volume / 10000.0) / highLowDiff;
 
-        // EOM 1일치 계산
-        double eom = boxRatio == 0 ? 0 : distanceMoved / boxRatio;
+        /*
+         * 소수점 둘째 자리까지 반올림
+         */
+        double roundedEom = Math.round(eom * 100.0) / 100.0;
 
-        // 차트용 JSON 매핑
-        resultMap.put("eom", eom);
+        /*
+         * 중요:
+         *
+         * 기존 코드에서는 resultMap에만 저장하고
+         * DailyStockPrice의 eom 필드에는 넣지 않았습니다.
+         *
+         * 그래서 DB 저장 시 EOM 값이 반영되지 않는 문제가 있었습니다.
+         */
+        targetDayData.setEom(roundedEom);
 
-        return String.format("📊 [EOM] 무빙용이성지수: %.4f", eom);
+        /*
+         * 차트나 다른 로직에서 사용할 수 있도록
+         * resultMap에도 함께 저장합니다.
+         */
+        resultMap.put("eom", roundedEom);
+
+        return String.format(
+                "📊 [EOM] 이동용이성 지수(%d일): %.2f",
+                period,
+                roundedEom
+        );
     }
 }
 

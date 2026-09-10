@@ -9,6 +9,12 @@ import java.util.Map;
 
 /**
  * 🧮 MFI (Money Flow Index) 자금흐름지표 계산기
+ *
+ * MFI:
+ * 가격과 거래량을 이용하여 자금 유입/유출 강도를 계산
+ *
+ * MFI Signal:
+ * 최근 N개의 MFI 평균값
  */
 @Component
 public class MfiCalculator implements IndicatorCalculator {
@@ -20,59 +26,227 @@ public class MfiCalculator implements IndicatorCalculator {
     }
 
     @Override
-    public String calculate(DailyStockPrice targetDayData,
-                            List<DailyStockPrice> historicalDataCache,
-                            int currentSimulationIndex,
-                            Map<String, Object> resultMap) {
+    public String calculate(
+            DailyStockPrice targetDayData,
+            List<DailyStockPrice> historicalDataCache,
+            int currentSimulationIndex,
+            Map<String, Object> resultMap
+    ) {
 
-        // USER 설정 우선 탐색 (없을 경우 DB 공통 설정 -> 기본값 14 적용)
-        String userId = null; // 추후 세션/파라미터에서 사용자 ID 전달받아 연결
-        int period = configManager.getUserInt(userId, "MFI_PERIOD", 14);
+        // 추후 사용자별 설정을 연결할 예정
+        String userId = null;
 
+        // MFI 계산 기간
+        int period = configManager.getUserInt(
+                userId,
+                "MFI_PERIOD",
+                14
+        );
+
+        // MFI Signal 계산 기간
+        int signalPeriod = configManager.getUserInt(
+                userId,
+                "MFI_SIGNAL_PERIOD",
+                9
+        );
+
+        /*
+         * MFI 계산에는 전일 데이터 비교가 필요하므로
+         * 최소 period일 이상의 과거 데이터가 필요합니다.
+         */
         if (currentSimulationIndex < period) {
+
             targetDayData.setMfi(50.0);
+            targetDayData.setMfiSignal(50.0);
+
             resultMap.put("mfi", 50.0);
+            resultMap.put("mfiSignal", 50.0);
+
             return "⏳ [데이터 축적] MFI 계산을 위한 과거 데이터(N일)가 부족합니다.";
+        }
+
+        /*
+         * ---------------------------------------------------------
+         * 1. 현재 MFI 계산
+         * ---------------------------------------------------------
+         */
+        double currentMfi = calculateMfiAtIndex(
+                historicalDataCache,
+                currentSimulationIndex,
+                period
+        );
+
+        double roundedMfi =
+                Math.round(currentMfi * 100.0) / 100.0;
+
+        /*
+         * ---------------------------------------------------------
+         * 2. MFI Signal 계산
+         * ---------------------------------------------------------
+         *
+         * 최근 signalPeriod개의 MFI 평균값을 Signal로 사용합니다.
+         */
+
+        double mfiSignal;
+
+        /*
+         * 최초 MFI 계산 가능 위치는 period 입니다.
+         */
+        int firstMfiIndex = period;
+
+        int availableMfiCount =
+                currentSimulationIndex - firstMfiIndex + 1;
+
+        /*
+         * 아직 9개 등의 Signal 기간이 충분히 쌓이지 않았으면
+         * 현재 MFI를 Signal 값으로 사용합니다.
+         */
+        if (availableMfiCount < signalPeriod) {
+
+            mfiSignal = roundedMfi;
+
+        } else {
+
+            double mfiSum = 0.0;
+
+            int signalStartIndex =
+                    currentSimulationIndex - signalPeriod + 1;
+
+            for (int i = signalStartIndex;
+                 i <= currentSimulationIndex;
+                 i++) {
+
+                double pastMfi = calculateMfiAtIndex(
+                        historicalDataCache,
+                        i,
+                        period
+                );
+
+                mfiSum += pastMfi;
+            }
+
+            mfiSignal =
+                    mfiSum / signalPeriod;
+        }
+
+        double roundedMfiSignal =
+                Math.round(mfiSignal * 100.0) / 100.0;
+
+        /*
+         * ---------------------------------------------------------
+         * 3. DailyStockPrice Entity 저장
+         * ---------------------------------------------------------
+         */
+
+        targetDayData.setMfi(roundedMfi);
+        targetDayData.setMfiSignal(roundedMfiSignal);
+
+        /*
+         * ---------------------------------------------------------
+         * 4. resultMap 저장
+         * ---------------------------------------------------------
+         */
+
+        resultMap.put("mfi", roundedMfi);
+        resultMap.put("mfiSignal", roundedMfiSignal);
+
+        return String.format(
+                "📊 [MFI] MFI(%d일): %.2f | Signal(%d일): %.2f",
+                period,
+                roundedMfi,
+                signalPeriod,
+                roundedMfiSignal
+        );
+    }
+
+
+    /**
+     * 특정 인덱스 시점의 MFI를 계산합니다.
+     *
+     * Signal 계산 시 과거 MFI도 필요하기 때문에
+     * MFI 계산 로직을 별도 메서드로 분리했습니다.
+     */
+    private double calculateMfiAtIndex(
+            List<DailyStockPrice> historicalDataCache,
+            int currentIndex,
+            int period
+    ) {
+
+        /*
+         * MFI는 이전 날짜와 비교해야 하므로
+         * 최소 period 위치 이후에 계산 가능합니다.
+         */
+        if (currentIndex < period) {
+            return 50.0;
         }
 
         double positiveMoneyFlow = 0.0;
         double negativeMoneyFlow = 0.0;
 
-        // 최근 N일간의 Positive / Negative Money Flow 합산
-        for (int i = currentSimulationIndex - period + 1; i <= currentSimulationIndex; i++) {
-            DailyStockPrice current = historicalDataCache.get(i);
-            DailyStockPrice previous = historicalDataCache.get(i - 1);
+        /*
+         * 최근 N일 동안의
+         * Positive / Negative Money Flow 계산
+         */
+        for (int i = currentIndex - period + 1;
+             i <= currentIndex;
+             i++) {
 
-            // Typical Price = (고가 + 저가 + 종가) / 3
-            double currentTp = (current.getHighPrice() + current.getLowPrice() + current.getClosePrice()) / 3.0;
-            double previousTp = (previous.getHighPrice() + previous.getLowPrice() + previous.getClosePrice()) / 3.0;
+            DailyStockPrice current =
+                    historicalDataCache.get(i);
 
-            // Money Flow = Typical Price * Volume
-            double rawMoneyFlow = currentTp * current.getVolume();
+            DailyStockPrice previous =
+                    historicalDataCache.get(i - 1);
+
+            /*
+             * Typical Price
+             *
+             * (고가 + 저가 + 종가) / 3
+             */
+            double currentTp =
+                    (
+                            current.getHighPrice()
+                                    + current.getLowPrice()
+                                    + current.getClosePrice()
+                    ) / 3.0;
+
+            double previousTp =
+                    (
+                            previous.getHighPrice()
+                                    + previous.getLowPrice()
+                                    + previous.getClosePrice()
+                    ) / 3.0;
+
+            /*
+             * Raw Money Flow
+             *
+             * Typical Price × Volume
+             */
+            double rawMoneyFlow =
+                    currentTp * current.getVolume();
 
             if (currentTp > previousTp) {
+
                 positiveMoneyFlow += rawMoneyFlow;
+
             } else if (currentTp < previousTp) {
+
                 negativeMoneyFlow += rawMoneyFlow;
             }
         }
 
-        // MFI 계산 (Negative Flow가 0일 경우 100 처리)
-        double mfi;
-        if (negativeMoneyFlow == 0) {
-            mfi = 100.0;
-        } else {
-            double moneyRatio = positiveMoneyFlow / negativeMoneyFlow;
-            mfi = 100.0 - (100.0 / (1.0 + moneyRatio));
+        /*
+         * Negative Money Flow가 0이면
+         * MFI는 100으로 처리합니다.
+         */
+        if (negativeMoneyFlow == 0.0) {
+            return 100.0;
         }
 
-        double roundedMfi = Math.round(mfi * 100.0) / 100.0;
+        double moneyRatio =
+                positiveMoneyFlow / negativeMoneyFlow;
 
-        // 엔티티 및 결과 맵 저장
-        targetDayData.setMfi(roundedMfi);
-        resultMap.put("mfi", roundedMfi);
-
-        return String.format("📊 [MFI] 자금흐름지수(%d일): %.2f", period, roundedMfi);
+        return 100.0
+                - (100.0 / (1.0 + moneyRatio));
     }
 }
 

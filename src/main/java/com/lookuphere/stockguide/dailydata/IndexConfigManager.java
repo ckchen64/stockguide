@@ -6,6 +6,8 @@ import org.springframework.stereotype.Component;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+import java.util.HashMap;
+
 @Component
 public class IndexConfigManager {
 
@@ -60,6 +62,21 @@ public class IndexConfigManager {
         return parseDouble(configCache.get(key), defaultValue);
     }
 
+    /**
+     * 프론트엔드 설정 화면 등에 전달하기 위한 전체 캐시 복사본
+     *
+     * 원본 configCache 자체를 반환하지 않고
+     * 새 HashMap으로 복사해서 반환합니다.
+     */
+    public Map<String, Object> getAllConfigs() {
+
+        // 혹시 아직 캐시가 비어 있으면 DB에서 한 번 읽어옵니다.
+        if (configCache.isEmpty()) {
+            refreshCache();
+        }
+
+        return new HashMap<>(configCache);
+    }
     // =========================================================================
     // 👤 [User 개인 설정 수용 API] 사용자 설정 -> 시스템 기본 설정 -> Fallback 순으로 탐색
     // =========================================================================

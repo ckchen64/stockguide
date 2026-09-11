@@ -5,6 +5,8 @@ import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -72,10 +74,20 @@ public class IndexConfigController {
                 indexConfigManager.getInt("MFI_PERIOD", 14)
         );
 
+        configs.put(
+                "MFI_SIGNAL_PERIOD",
+                indexConfigManager.getInt("MFI_SIGNAL_PERIOD", 9)
+        );
+
         // Sigma
         configs.put(
                 "SIGMA_PERIOD",
                 indexConfigManager.getInt("SIGMA_PERIOD", 20)
+        );
+
+        configs.put(
+                "SIGMA_SIGNAL_PERIOD",
+                indexConfigManager.getInt("SIGMA_SIGNAL_PERIOD", 9)
         );
 
         // ADX / DI
@@ -90,6 +102,11 @@ public class IndexConfigController {
                 indexConfigManager.getInt("CCI_PERIOD", 20)
         );
 
+        configs.put(
+                "CCI_SIGNAL_PERIOD",
+                indexConfigManager.getInt("CCI_SIGNAL_PERIOD", 9)
+        );
+
         // EOM
         configs.put(
                 "EOM_PERIOD",
@@ -102,5 +119,56 @@ public class IndexConfigController {
         );
 
         return configs;
+    }
+
+    /**
+     * 지표 파라미터 변경
+     *
+     * 1. MySQL stock_index_config 저장
+     * 2. IndexConfigManager 캐시 갱신
+     * 3. 다음 지표 계산부터 즉시 새 값 적용
+     */
+    @PutMapping
+    public Map<String, Object> updateIndexConfig(
+            @RequestBody Map<String, Integer> request
+    ) {
+
+        if (request == null || request.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "변경할 설정값이 없습니다."
+            );
+        }
+
+        String key = request.keySet()
+                .stream()
+                .findFirst()
+                .orElseThrow(
+                        () -> new IllegalArgumentException(
+                                "변경할 설정값이 없습니다."
+                        )
+                );
+
+        Integer value = request.get(key);
+
+        if (value == null || value <= 0) {
+            throw new IllegalArgumentException(
+                    "설정값은 1 이상이어야 합니다."
+            );
+        }
+
+        indexConfigManager.saveIntConfig(
+                key,
+                value
+        );
+
+        Map<String, Object> result =
+                new LinkedHashMap<>();
+
+        result.put("status", "SUCCESS");
+        result.put("key", key);
+        result.put("value", value);
+        result.put("persisted", true);
+
+        return result;
     }
 }
